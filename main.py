@@ -61,7 +61,6 @@ class CopilotClient:
         }
 
         done_event = threading.Event()
-        timeout_event = threading.Event()
 
         def send_message(ws):
             ws.send(json.dumps({
