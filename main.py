@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 
@@ -21,10 +23,6 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
-
-class ChatResponse(BaseModel):
-    text: str
-    message_id: Optional[str] = None
 
 class CopilotClient:
     def __init__(self):
@@ -63,6 +61,7 @@ class CopilotClient:
         }
 
         done_event = threading.Event()
+        timeout_event = threading.Event()
 
         def send_message(ws):
             ws.send(json.dumps({
@@ -109,6 +108,7 @@ class CopilotClient:
                 done_event.set()
 
         def on_error(ws, err):
+            print(f"WebSocket error: {err}")
             done_event.set()
 
         ws = websocket.WebSocketApp(
@@ -126,7 +126,13 @@ class CopilotClient:
         thread = threading.Thread(target=ws.run_forever)
         thread.start()
 
-        done_event.wait()
+        # Wait with timeout (30 seconds)
+        done_event.wait(timeout=30)
+
+        if not done_event.is_set():
+            ws.close()
+            if not result["text"]:
+                result["text"] = "Timeout: Copilot took too long to respond"
 
         return result
 
@@ -140,22 +146,19 @@ async def root():
 @app.get("/api/chat")
 async def chat_get(message: str = Query(..., description="Your message to Copilot")):
     try:
-        result = copilot_client.ask(message)
-        return {
-            "text": result["text"],
-            "message_id": result["message_id"]
-        }
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, copilot_client.ask, message)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat")
 async def chat_post(request: ChatRequest):
     try:
-        result = copilot_client.ask(request.message)
-        return ChatResponse(
-            text=result["text"],
-            message_id=result["message_id"]
-        )
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, copilot_client.ask, request.message)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
